@@ -1,0 +1,375 @@
+---
+title: "Batch correct Wagner dataset, plot heatmaps"
+output:
+  html_document:
+    keep_md: true
+    smart: false
+    theme: united
+date: 'Compiled: `r format(Sys.Date(), "%B %d, %Y")`'
+---
+***
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  cache.lazy = FALSE,
+  tidy = TRUE
+)
+```
+
+## Libraries
+```{r}
+suppressMessages(library(plotly))
+suppressMessages(library(Seurat))
+suppressMessages(library(dplyr))
+suppressMessages(library(Matrix))
+suppressMessages(library(gprofiler2))
+suppressMessages(library(gplots))
+suppressMessages(library(future))
+suppressMessages(library(SeuratWrappers))
+suppressMessages(library(SeuratDisk))
+suppressMessages(library(gridExtra))
+suppressMessages(library(ggplot2))
+suppressMessages(library(ggrepel))
+
+outputDir = getwd()
+
+# A list of cell cycle markers, from Tirosh et al, 2015, is loaded with Seurat.  We can
+# segregate this list into markers of G2/M phase and markers of S phase
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+```
+
+# Wagner dataset
+* Concerns ovary tissue from c-sections and gender reassignment patients (GRP)
+* DOI: 10.1038/s41467-020-14936-3
+* We only use non sorted 10X data
+
+## Load the wagner data, Create Seurat objects
+```{r}
+c_sec_data <- Read10X_h5(filename = "/path/to/filtered_gene_bc_matrices_h5.h5")
+grp_data <- Read10X_h5(filename = "/path/to/filtered_gene_bc_matrices_h5.h5")
+
+c_sec <-  CreateSeuratObject(counts = c_sec_data, 
+                             min.cells = 3, 
+                             min.features = 100,
+                             project = "c_sec")
+grp <-  CreateSeuratObject(counts = grp_data, 
+                           min.cells = 3, 
+                           min.features = 100,
+                           project = "grp")
+```
+
+## Merge the objects
+```{r}
+wagner <- merge(x = c_sec, 
+                y = grp,
+                add.cell.ids = c("c-sec", "gpr"))
+```
+
+# Seurat workflow
+## QC
+* In the paper they discard cells expressing over 7000 genes. Probably too lenient, we discard above 5000
+* In the paper they use a 25% MT threshold. Probably too lenient, we choose 10%
+```{r}
+wagner[["percent.mt"]] <- PercentageFeatureSet(wagner, pattern = "^MT-")
+VlnPlot(wagner, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        ncol = 3)
+wagner <- subset(wagner, 
+                    subset = nFeature_RNA > 200 & nFeature_RNA < 5000 & percent.mt < 10)
+VlnPlot(wagner, 
+        features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), 
+        ncol = 3)
+table(wagner$orig.ident)
+```
+
+## Normalize the data
+* Notice we use a scale factor of 20000, to be on the upper side of the cell read count
+```{r}
+wagner <- NormalizeData(wagner, 
+                        normalization.method = "LogNormalize", 
+                        scale.factor = 20000)
+```
+
+## Dissociation genes on normalized data
+* Check the expression of dissociation genes compared to total expression (for details see 10.1038/nmeth.4437)
+```{r, message=FALSE}
+genesChrom <- c("Actg1__chr11","Ankrd1__chr19","Arid5a__chr1","Atf3__chr1","Atf4__chr15","Bag3__chr7","Bhlhe40__chr6",
+"Brd2__chr17","Btg1__chr10","Btg2__chr1","Ccnl1__chr3","Ccrn4l__chr3","Cebpb__chr2","Cebpd__chr16",
+"Cebpg__chr7","Csrnp1__chr9","Cxcl1__chr5","Cyr61__chr3","Dcn__chr10","Ddx3x__chrX","Ddx5__chr11",
+"Des__chr1","Dnaja1__chr4","Dnajb1__chr8","Dnajb4__chr3","Dusp1__chr17","Dusp8__chr7",
+"Egr1__chr18","Egr2__chr10","Eif1__chr11","Eif5__chr12","Erf__chr7","Errfi1__chr4","Fam132b__chr1",
+"Fos__chr12","Fosb__chr7","Fosl2__chr5","Gadd45a__chr6","Gcc1__chr6","Gem__chr4","H3f3b__chr11",
+"Hipk3__chr2","Hsp90aa1__chr12","Hsp90ab1__chr17","Hspa1a__chr17","Hspa1b__chr17","Hspa5__chr2",
+"Hspa8__chr9","Hspb1__chr5","Hsph1__chr5","Id3__chr4","Idi1__chr13","Ier2__chr8","Ier3__chr17",
+"Ifrd1__chr12","Il6__chr5","Irf1__chr11","Irf8__chr8","Itpkc__chr7","Jun__chr4","Junb__chr8",
+"Jund__chr8","Klf2__chr8","Klf4__chr4","Klf6__chr13","Klf9__chr19","Litaf__chr16","Lmna__chr3",
+"Maff__chr15","Mafk__chr5","Mcl1__chr3","Midn__chr10","Mir22hg__chr11","Mt1__chr8","Mt2__chr8",
+"Myadm__chr7","Myc__chr15","Myd88__chr9","Nckap5l__chr15","Ncoa7__chr10","Nfkbia__chr12","Nfkbiz__chr16",
+"Nop58__chr1","Nppc__chr1","Nr4a1__chr15","Odc1__chr12","Osgin1__chr8","Oxnad1__chr14","Pcf11__chr7",
+"Pde4b__chr4","Per1__chr11","Phlda1__chr10","Pnp__chr14","Pnrc1__chr4","Ppp1cc__chr5","Ppp1r15a__chr7",
+"Pxdc1__chr13","Rap1b__chr10","Rassf1__chr9","Rhob__chr12","Rhoh__chr5","Ripk1__chr13","Sat1__chrX",
+"Sbno2__chr10","Sdc4__chr2","Serpine1__chr5","Skil__chr3","Slc10a6__chr5","Slc38a2__chr15",
+"Slc41a1__chr1","Socs3__chr11","Sqstm1__chr11","Srf__chr17","Srsf5__chr12","Srsf7__chr17",
+"Stat3__chr11","Tagln2__chr1","Tiparp__chr3","Tnfaip3__chr10","Tnfaip6__chr2","Tpm3__chr3",
+"Tppp3__chr8","Tra2a__chr6","Tra2b__chr16","Trib1__chr15","Tubb4b__chr2","Tubb6__chr18",
+"Ubc__chr5","Usp2__chr9","Wac__chr18","Zc3h12a__chr4","Zfand5__chr19","Zfp36__chr7","Zfp36l1__chr12",
+"Zfp36l2__chr17","Zyx__chr6","Gadd45g__chr13","Hspe1__chr1","Ier5__chr1","Kcne4__chr1")
+
+genes <- sapply(genesChrom, function(x){
+  toupper( strsplit(x, "__")[[1]][1])
+})
+
+Data <- as.data.frame(as.matrix(GetAssayData(object = wagner)))
+cat("All genes:\n")
+print(unname(genes))
+write.table(genes, paste0(outputDir, "/mouseDissocGenes.tsv"), sep ="\t", quote=FALSE, row.names = FALSE)
+
+## Remove mouse only genes and put the corresponding human
+genes <- genes[!genes %in% c("CCRN4L", "MT1", "MT2")]
+genes <- c(genes, "NOCT", "MT1A", "MT2A")
+cat("Genes from mouse we miss in human:\n")
+unname(genes[!genes %in% row.names(Data)])
+
+## Calculate the percentage of UMIs maping on dissociation genes
+totalSum <- Matrix::colSums(GetAssayData(object = wagner))
+selection <- Data[genes, ]
+selection[is.na(selection)] <- 0
+dissociationSums <- colSums(selection)  
+countSums <- merge(totalSum, dissociationSums, by="row.names", all=TRUE, sort= FALSE)
+rownames(countSums) <- countSums$Row.names
+countSums <- countSums[-1]
+colnames(countSums) <- c("totalCount", "dissociationCounts")
+countSums$percentage <- countSums$dissociationCounts/countSums$totalCount
+## Save in meta.data of object
+wagner@meta.data$percent.dissoc <- countSums$percentage
+
+## Draw histogram for all samples
+percentages <- wagner$percent.dissoc
+hist(percentages, 
+     breaks = 100, 
+     col = "lightgrey", 
+     main = paste("Expression dissociation-affected genes"), 
+xlab = "Ratio of dissociation-affected genes to total gene count", ylab = "Number of cells", xlim = c(0, 0.20))
+```
+
+## Keep cells with dissociation percentages below the threshold of 6%
+```{r}
+wagner <- subset(x = wagner, 
+                subset = percent.dissoc < 0.06)
+dim(wagner)
+table(wagner$orig.ident)
+```
+
+## Plot dataset
+```{r}
+DimPlot(object, 
+        reduction="umap",
+        group.by="RNA_snn_res.0.5")
+DimPlot(object, 
+        reduction="umap",
+        group.by='old.ident')
+```
+
+## Batch correct with MNN
+* Correct for c-sec vs grp effect
+```{r}
+object <- DietSeurat(object)
+object <- RunFastMNN(object.list = SplitObject(object, split.by = "old.ident"))
+```
+
+## Redo clustering, UMAP calc with mnn correction
+```{r}
+object <- FindNeighbors(object, reduction = "mnn", dims = c(1:15))
+object <- FindClusters(object, resolution = 0.3)
+object <- RunUMAP(object, reduction = "mnn", dims = c(1:15))
+DimPlot(object, 
+        reduction = "umap")
+DimPlot(object, 
+       reduction = "umap",
+       group.by = "old.ident")
+saveRDS(object = object, file = "wagner_mnn.rds")
+
+object[['seurat_clusters']] <- as.character(object@meta.data$seurat_clusters)
+SaveH5Seurat(object, filename = "wagner_mnn.h5Seurat", overwrite=TRUE)
+Convert("wagner_mnn.h5Seurat", dest = "h5ad", overwrite=TRUE)
+```
+
+## Remove Oocytes
+```{r}
+subset(x = object, subset = ZP3 < 3)
+object <- subset(x = object, subset = ZP3 < 3)
+object <- FindVariableFeatures(object, selection.method = "vst", nfeatures = 2500)
+all.genes <- rownames(object)
+object <- ScaleData(object, features = all.genes)
+object <- RunPCA(object, features = VariableFeatures(object), nfeatures.print = 10)
+object <- DietSeurat(object)
+object <- RunFastMNN(object.list = SplitObject(object, split.by = "old.ident"))
+object <- FindNeighbors(object, reduction = "mnn", dims = c(1:15))
+object <- FindClusters(object, resolution = 0.3)
+object <- RunUMAP(object, reduction = "mnn", dims = c(1:15))
+DimPlot(object, 
+        reduction = "umap",
+        pt.size=1)
+ggsave("umap_clusters.pdf")
+DimPlot(object, 
+       reduction = "umap",
+       group.by = "old.ident",
+       pt.size=1)
+ggsave("umap_old_ident.pdf")
+
+saveRDS(object = object, file = "wagner_mnn_no_oocytes.rds")
+
+object[['seurat_clusters']] <- as.character(object@meta.data$seurat_clusters)
+SaveH5Seurat(object, filename = "wagner_mnn_no_oocytes.h5Seurat", overwrite=TRUE)
+Convert("wagner_mnn_no_oocytes.h5Seurat", dest = "h5ad", overwrite=TRUE)
+```
+
+## Calculate top markers
+```{r}
+markers <- FindAllMarkers(object,
+                          only.pos = TRUE,
+                          min.pct = 0.25,
+                          logfc.threshold = 0.25)
+markersPath = "markers_mnn_no_oocytes.tsv"
+write.table(x = markers,
+            file = markersPath,
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE)
+markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 4, order_by = avg_log2FC)
+
+filtered_markers <- markers %>% filter(pct.1 > 0.6 & p_val_adj < 0.05)
+write.table(x = filtered_markers,
+            file = paste0(outputDir, "/filtered_markers_mnn_no_oocytes.tsv"),
+            row.names = FALSE)
+
+topMarkers <- filtered_markers %>%
+              group_by(cluster) %>%
+              top_n(5, avg_log2FC)
+topMarkersPath = "topMarkers_mnn_filtered_markers.tsv"
+write.table(x = topMarkers,
+            file = topMarkersPath,
+            sep = "\t",
+            quote = FALSE,
+            row.names = FALSE)
+```
+
+## Plot heatmap for top genes
+* Notice there are no genes passing thresholds for cl 0. Confirm with cellxgene 
+```{r}
+## Calculate the per cluster mean expression
+group_identity <- Idents(object=object)
+
+normCounts <- GetAssayData(object=object)#, slot='scale.data')
+
+## Substiture cell ID with cluster ID
+colnames(normCounts) <- group_identity
+
+## Remove cluster 0
+# group_identity <- group_identity[group_identity!=0]
+# group_identity <- droplevels(group_identity)
+
+meanDF <- do.call(cbind, lapply(levels(group_identity), function(id){
+   groupCounts <- normCounts[, colnames(normCounts) == id]
+   df <- data.frame( c = apply(groupCounts, 1, mean))
+   colnames(df) <- id
+   return(df)
+}))
+
+meanDF_select <- as.matrix(meanDF[topMarkers$gene, ])
+pdf("heatmap_top_markers.pdf")
+heatmap.2(meanDF_select, 
+          col="bluered", 
+          trace = "none")
+dev.off()
+heatmap.2(meanDF_select, 
+          col="bluered", 
+          trace = "none")
+```
+
+## Top genes, separate clusters on old.ident
+```{r}
+old_ident_clusters <- paste(object[["old.ident"]]$"old.ident", object[["seurat_clusters"]]$seurat_clusters, sep="_" )
+colnames(normCounts) <- old_ident_clusters
+# group_identity <- as.factor(old_ident_clusters[old_ident_clusters != "grp_0" &  old_ident_clusters != "c_sec_0"])
+group_identity <- as.factor(old_ident_clusters)
+
+meanDF <- do.call(cbind, lapply(levels(group_identity), function(id){
+   groupCounts <- normCounts[, colnames(normCounts) == id]
+   df <- data.frame( c = apply(groupCounts, 1, mean))
+   colnames(df) <- id
+   return(df)
+}))
+
+meanDF_select <- as.matrix(meanDF[topMarkers$gene, ]) 
+pdf("heatmap_top_markers_separ.pdf")
+heatmap.2(meanDF_select, 
+          col="bluered", 
+          trace = "none")
+dev.off()
+heatmap.2(meanDF_select, 
+          col="bluered", 
+          trace = "none")
+```
+
+## Selected genes, separate clusters on old.ident
+```{r}
+selected_genes <- c("DCN", "FN1", "NR2F2", "ATF3",
+                    "LUM", "COL1A1", "COL1A2", "COL3A1",
+                    "COL6A1", "BGN", "HSPA1A")
+
+meanDF_select <- as.matrix(meanDF[selected_genes, ])
+pdf("heatmap_selected_markers_separ.pdf")
+heatmap.2(meanDF_select, 
+          col="bluered", 
+          trace = "none")
+dev.off()
+heatmap.2(meanDF_select, 
+          col="bluered", 
+          trace = "none")
+```
+
+## Contrast s_sec_2 and grp_2, plot Volcano
+```{r}
+object[["old_ident_clusters"]] <- paste(object[["old.ident"]]$"old.ident", object[["seurat_clusters"]]$seurat_clusters, sep="_" )
+deTab <- FindMarkers(object = object,
+                     ident.1 = "c_sec_2", 
+                     ident.2 = "grp_2",
+                     group.by = 'old_ident_clusters',
+                     min.pct = 0.25)
+
+# Add a column to to the table store whether a gene is Up-regulated, Down-regulated or the change is Non-significant
+# The levels of average log fold change and he adjusted P-value are used to decide on the above 
+deTab$diffexpressed <- "Non-significant" 
+deTab$diffexpressed[deTab$avg_log2FC > 0.5 & deTab$p_val_adj < 0.05] <- "Up"
+deTab$diffexpressed[deTab$avg_log2FC < -0.5 & deTab$p_val_adj < 0.05] <- "Down"
+
+ 
+deTab$delabel <- NA
+deTab$delabel[deTab$p_val_adj<0.05] <- rownames(deTab)[deTab$p_val_adj<0.05]
+
+markersPath = "markers_c_sec_2_vs_grp_2.tsv"
+write.table(x = deTab,
+            file = markersPath,
+            sep = "\t",
+            quote = FALSE,
+            row.names = TRUE)
+
+ggplot(data=deTab, aes(x=avg_log2FC, y=-log10(p_val_adj), col=diffexpressed, label=delabel)) +
+        ggtitle("Volcano Plot") +
+        geom_point() +
+        theme_minimal() +
+        geom_text_repel(max.overlaps = 15) +
+        scale_color_manual(values=c("blue", "gray", "red")) +
+        geom_vline(xintercept=c(-0.5, 0.5), col="red") +
+        geom_hline(yintercept=-log10(0.05), col="red")
+ggsave("c_sec_2_vs_grp_2.pdf")
+```
+
+## sessionInfo
+```{r}
+sessionInfo()
+```
