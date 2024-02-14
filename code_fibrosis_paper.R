@@ -1,11 +1,3 @@
-install.packages("devtools")
-install.packages("SeuratObject")
-install.packages("Seurat")
-install.packages("Seurat")
-install.packages("dplyr")
-install.packages("dplyr")
-install.packages("ggplot2")
-
 suppressMessages(library(SeuratObject))
 suppressMessages(library(dplyr))
 suppressMessages(library(ggplot2))
