@@ -3,7 +3,7 @@
 ## Running under: Rocky Linux 8.9 (Green Obsidian)
 ## 
 ## Matrix products: default
-## BLAS/LAPACK: /exports/sasc/ioannis/mambaforge/envs/seuratV4/lib/libopenblasp-r0.3.23.so;  LAPACK version 3.11.0
+## BLAS/LAPACK: libopenblasp-r0.3.23.so;  LAPACK version 3.11.0
 ## 
 ## locale:
 ##  [1] LC_CTYPE=en_US.UTF-8    LC_NUMERIC=C            LC_TIME=C              
