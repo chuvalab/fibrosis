@@ -3,7 +3,7 @@ suppressMessages(library(dplyr))
 suppressMessages(library(ggplot2))
 suppressMessages(library(Seurat))
 
-wagner2<- readRDS("~/Desktop/sequencing/wagner2/wagner_mnn_no_oocytes.rds")
+wagner2 <- readRDS("~/Desktop/sequencing/wagner2/wagner_mnn_no_oocytes.rds")
 
 ##UMAPS figure.1B
 DimPlot(object=wagner2,reduction = "umap")
